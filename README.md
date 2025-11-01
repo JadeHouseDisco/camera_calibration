@@ -1,5 +1,31 @@
 # What this is
-Stereo camera calibration script written in python. Uses OpenCV primarily. 
+Stereo camera calibration script written in python. Uses OpenCV primarily.
+
+# Quick start
+
+1. **Clone & enter the project**
+   ```bash
+   git clone https://github.com/TemugeB/camera_calibration.git
+   cd camera_calibration
+   ```
+2. **Create a virtual environment (recommended)**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. **Install dependencies**
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+4. **Configure the calibration session** by editing `calibration_settings.yaml` (see the [Calibration settings](#calibration-settings) section below for field descriptions).
+5. **Launch the interactive workflow**
+   ```bash
+   python3 calib.py calibration_settings.yaml
+   ```
+6. **Follow the on-screen prompts**. The script guides you through frame capture, intrinsic calibration, stereo calibration, and export of camera parameters. All generated data are written inside the project directory (see [Outputs](#outputs) for details).
+
+If you rerun the script, previous outputs remain untouched unless you delete them manually, allowing you to keep multiple calibration attempts.
 
 # Why stereo calibrate two cameras
 Allows you to obtain 3D points through triangulation from two camera views.
@@ -9,6 +35,8 @@ I wrote a [blog post](https://temugeb.github.io/opencv/python/2021/02/02/stereo-
 # Setup
 
 Clone the repository to your PC. Then navigate to the folder in your terminal. Also print out a calibration pattern. Make sure it is as flat as you can get it. Small warps in the calibration pattern results in very poor calibration. Also, the calibration pattern should be properly sized so that both cameras can see it clearly at the same time. Checkerboards can be generated [here](https://calib.io/pages/camera-calibration-pattern-generator).
+
+> **Tip:** Laminate or mount the checkerboard to rigid foam board to minimize warping and make it easier to hold steady.
 
 **Install required packages**
 
@@ -24,6 +52,8 @@ Install required packages:
 ```
 pip3 install -r requirements.txt
 ```
+
+If you are running into package conflicts with system Python, use a virtual environment as shown in the [Quick start](#quick-start) section.
 
 **Calibration settings**
 
@@ -64,18 +94,20 @@ The first two entries in the list are used as the stereo pair when running the d
 Before running the code, make sure both cameras are in their final position. Once the cameras are calibrated, their positions must remain fixed. If the cameras move, then you need to recalibrate. However, only stereo calibration is necessary in this case(Step.3 and onwards).
 
 Run the program by invoking:
-```python3 calib.py calibration_settings.yaml```. 
+```bash
+python3 calib.py calibration_settings.yaml
+```
 
 The calibration procedures should take less than 10 minutes.
 
-**Check the code to see each method call corresponding to the steps below.**
+When the script starts it prints the active configuration, then walks you through the five steps listed below. You can cancel at any time with <kbd>Ctrl</kbd>+<kbd>C</kbd>; partial results remain saved on disk.
 
 
 **Step 1. Saving Calibration Pattern Frames**
 
 Step1 will create ```frames``` folder and save calibration pattern frames. The number of frames saved is set by ```mono_calibration_frames```. Press SPACE when ready to save frames.
 
-Show the calibration pattern to each camera. Don't move it too far away. When a frame is taken, move the pattern to a differnt position and try to cover different parts of the frame. Keep the pattern steady when the frame is taken.
+Show the calibration pattern to each camera. Don't move it too far away. When a frame is taken, move the pattern to a different position and try to cover different parts of the frame. Keep the pattern steady when the frame is taken.
 
 ![image](https://user-images.githubusercontent.com/36071915/175025024-cf3000a7-daba-4721-a24e-d8d4550f6f83.png)
 
@@ -103,7 +135,7 @@ The paired images will be saved in a new folder: ```frames_pair```.
 
 **Step4. Obtain Camera0 to Camera1 Rotation and Translation**
 
-Use the paired calibration pattern images to obtain the rotation matrix R and translation vector T that transforms points in Camera0 coordinate space to camera1 coorindate space. As before, visually ensure that detected points are correct. If the detected points are poor in any frame, press "s" to skip this pair. 
+Use the paired calibration pattern images to obtain the rotation matrix R and translation vector T that transforms points in Camera0 coordinate space to camera1 coorindate space. As before, visually ensure that detected points are correct. If the detected points are poor in any frame, press "s" to skip this pair.
 
 You should see something like this.
 
@@ -125,7 +157,7 @@ As final step, Step5 shows coordinate axes shifted 60cm forward in both camera v
 
 ![image](https://user-images.githubusercontent.com/36071915/175036378-9ec45563-a98a-4fc6-a838-15f9c8dca1dc.png)
 
-If you do not see image like this, then something has gone wrong. If you see it in camera0 and not camera1, then change ```_zshift``` to some value that you know both cameras can see. 
+If you do not see image like this, then something has gone wrong. If you see it in camera0 and not camera1, then change ```_zshift``` to some value that you know both cameras can see.
 
 **Optional**
 
@@ -133,10 +165,32 @@ If you must define a different world space origin from camera0, you can uncommen
 
 ![image](https://user-images.githubusercontent.com/36071915/175038880-52ed6ce9-401e-441e-b0a3-fbff4c87f09a.png)
 
-You can also replace ```R_W0``` and ```T_W0``` to any rotation and translation for camera0, calculated some other way. This step is easier than you think. 
+You can also replace ```R_W0``` and ```T_W0``` to any rotation and translation for camera0, calculated some other way. This step is easier than you think.
 
 Finally, two additional extrinsic files will be created, with respect to a world origin:
 ```world_to_<camera_name>_rot_trans.dat``` (e.g., ```world_to_camera0_rot_trans.dat``` and ```world_to_camera1_rot_trans.dat```). These paired with the intrinsic parameters can also be used for triangulation. In this case, the 3D triangulated points will be with respect to the coordinate space defined by the calibration pattern.
+
+# Outputs
+
+The workflow writes all results alongside the script:
+
+| Path | Description |
+| ---- | ----------- |
+| `frames/` | Individual checkerboard frames for each camera captured in Step 1. |
+| `frames_pair/` | Synchronized stereo pairs captured in Step 3. |
+| `camera_parameters/<camera>_intrinsics.dat` | Intrinsic matrix and distortion coefficients per camera. |
+| `camera_parameters/<camera>_rot_trans.dat` | Rotation (`R`) and translation (`T`) from the world frame (camera0 by default) to each camera. |
+| `camera_parameters/world_to_<camera>_rot_trans.dat` | Rotation/translation when using a custom world origin (if optional step enabled). |
+
+You can load these `.dat` files with `numpy.load` to recover the stored matrices:
+
+```python
+import numpy as np
+intrinsics = np.load("camera_parameters/camera0_intrinsics.dat", allow_pickle=True).item()
+print(intrinsics["camera_matrix"])
+```
+
+Leverage the matrices with OpenCV functions such as [`cv2.triangulatePoints`](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html#ga475d3f0f0f32d67b6aa9dd4c424dcc09) to reconstruct 3D points from synchronized image observations.
 
 **Bonus**
 
