@@ -8,6 +8,9 @@ import os
 
 #This will contain the calibration settings from the calibration_settings.yaml file
 calibration_settings = {}
+_camera_device_map = {}
+_camera_index_map = {}
+_camera_order = []
 
 #Given Projection matrices P1 and P2, and pixel coordinates point1 and point2, return triangulated 3D point.
 def DLT(P1, P2, point1, point2):
@@ -29,22 +32,78 @@ def DLT(P1, P2, point1, point2):
 
 #Open and load the calibration_settings.yaml file
 def parse_calibration_settings_file(filename):
-    
-    global calibration_settings
+
+    global calibration_settings, _camera_device_map, _camera_index_map, _camera_order
 
     if not os.path.exists(filename):
         print('File does not exist:', filename)
         quit()
-    
+
     print('Using for calibration settings: ', filename)
 
     with open(filename) as f:
-        calibration_settings = yaml.safe_load(f)
+        calibration_settings = yaml.safe_load(f) or {}
 
-    #rudimentray check to make sure correct file was loaded
-    if 'camera0' not in calibration_settings.keys():
-        print('camera0 key was not found in the settings file. Check if correct calibration_settings.yaml file was passed')
+    cameras = calibration_settings.get('cameras')
+    if not isinstance(cameras, list):
+        print('"cameras" list was not found in the settings file. Check if correct calibration_settings.yaml file was passed')
         quit()
+
+    if len(cameras) < 2:
+        print('At least two cameras must be defined in the settings file for stereo calibration')
+        quit()
+
+    _camera_device_map = {}
+    _camera_index_map = {}
+    _camera_order = []
+
+    for idx, camera in enumerate(cameras):
+        if not isinstance(camera, dict):
+            print('Each camera entry must be a mapping with "name" and "device_id" fields')
+            quit()
+
+        name = camera.get('name')
+        device_id = camera.get('device_id')
+
+        if name is None or device_id is None:
+            print('Each camera entry must define both "name" and "device_id" fields')
+            quit()
+
+        name = str(name)
+        try:
+            device_id = int(device_id)
+        except (TypeError, ValueError):
+            print(f'Camera "{name}" has an invalid "device_id". It must be an integer value')
+            quit()
+
+        if name in _camera_device_map:
+            print(f'Duplicate camera name found: "{name}". Camera names must be unique')
+            quit()
+
+        camera['name'] = name
+        camera['device_id'] = device_id
+
+        _camera_device_map[name] = device_id
+        _camera_index_map[name] = idx
+        _camera_order.append(name)
+
+
+def get_camera_device_id(camera_name):
+    try:
+        return _camera_device_map[camera_name]
+    except KeyError:
+        raise KeyError(f'Camera "{camera_name}" is not defined in calibration_settings.yaml')
+
+
+def get_camera_index(camera_name):
+    try:
+        return _camera_index_map[camera_name]
+    except KeyError:
+        raise KeyError(f'Camera "{camera_name}" is not defined in calibration_settings.yaml')
+
+
+def get_configured_camera_names():
+    return list(_camera_order)
 
 
 #Open camera stream and save frames
@@ -55,7 +114,7 @@ def save_frames_single_camera(camera_name):
         os.mkdir('frames')
 
     #get settings
-    camera_device_id = calibration_settings[camera_name]
+    camera_device_id = get_camera_device_id(camera_name)
     width = calibration_settings['frame_width']
     height = calibration_settings['frame_height']
     number_to_save = calibration_settings['mono_calibration_frames']
@@ -117,7 +176,7 @@ def save_frames_single_camera(camera_name):
 #Calibrate single camera to obtain camera intrinsic parameters from saved frames.
 def calibrate_camera_for_intrinsic_parameters(images_prefix):
     
-    #NOTE: images_prefix contains camera name: "frames/camera0*".
+    #NOTE: images_prefix contains camera name: "frames/<camera_name>*".
     images_names = glob.glob(images_prefix)
 
     #read all frames
@@ -217,8 +276,8 @@ def save_frames_two_cams(camera0_name, camera1_name):
     number_to_save = calibration_settings['stereo_calibration_frames']
 
     #open the video streams
-    cap0 = cv.VideoCapture(calibration_settings[camera0_name])
-    cap1 = cv.VideoCapture(calibration_settings[camera1_name])
+    cap0 = cv.VideoCapture(get_camera_device_id(camera0_name))
+    cap1 = cv.VideoCapture(get_camera_device_id(camera1_name))
 
     #set camera resolutions
     width = calibration_settings['frame_width']
@@ -416,8 +475,8 @@ def check_calibration(camera0_name, camera0_data, camera1_name, camera1_data, _z
     pixel_points_camera1 = np.array(pixel_points_camera1)
 
     #open the video streams
-    cap0 = cv.VideoCapture(calibration_settings[camera0_name])
-    cap1 = cv.VideoCapture(calibration_settings[camera1_name])
+    cap0 = cv.VideoCapture(get_camera_device_id(camera0_name))
+    cap1 = cv.VideoCapture(get_camera_device_id(camera1_name))
 
     #set camera resolutions
     width = calibration_settings['frame_width']
@@ -522,13 +581,13 @@ def get_cam1_to_world_transforms(cmtx0, dist0, R_W0, T_W0,
     return R_W1, T_W1
 
 
-def save_extrinsic_calibration_parameters(R0, T0, R1, T1, prefix = ''):
-    
+def save_extrinsic_calibration_parameters(camera0_name, R0, T0, camera1_name, R1, T1, prefix = ''):
+
     #create folder if it does not exist
     if not os.path.exists('camera_parameters'):
         os.mkdir('camera_parameters')
 
-    camera0_rot_trans_filename = os.path.join('camera_parameters', prefix + 'camera0_rot_trans.dat')
+    camera0_rot_trans_filename = os.path.join('camera_parameters', f"{prefix}{camera0_name}_rot_trans.dat")
     outf = open(camera0_rot_trans_filename, 'w')
 
     outf.write('R:\n')
@@ -545,7 +604,7 @@ def save_extrinsic_calibration_parameters(R0, T0, R1, T1, prefix = ''):
     outf.close()
 
     #R1 and T1 are just stereo calibration returned values
-    camera1_rot_trans_filename = os.path.join('camera_parameters', prefix + 'camera1_rot_trans.dat')
+    camera1_rot_trans_filename = os.path.join('camera_parameters', f"{prefix}{camera1_name}_rot_trans.dat")
     outf = open(camera1_rot_trans_filename, 'w')
 
     outf.write('R:\n')
@@ -568,59 +627,62 @@ if __name__ == '__main__':
     if len(sys.argv) != 2:
         print('Call with settings filename: "python3 calibrate.py calibration_settings.yaml"')
         quit()
-    
+
     #Open and parse the settings file
     parse_calibration_settings_file(sys.argv[1])
 
+    camera_names = get_configured_camera_names()
+    primary_camera_name, secondary_camera_name = camera_names[0], camera_names[1]
+
 
     """Step1. Save calibration frames for single cameras"""
-    save_frames_single_camera('camera0') #save frames for camera0
-    save_frames_single_camera('camera1') #save frames for camera1
+    save_frames_single_camera(primary_camera_name)
+    save_frames_single_camera(secondary_camera_name)
 
 
     """Step2. Obtain camera intrinsic matrices and save them"""
     #camera0 intrinsics
-    images_prefix = os.path.join('frames', 'camera0*')
-    cmtx0, dist0 = calibrate_camera_for_intrinsic_parameters(images_prefix) 
-    save_camera_intrinsics(cmtx0, dist0, 'camera0') #this will write cmtx and dist to disk
+    images_prefix = os.path.join('frames', f'{primary_camera_name}*')
+    cmtx0, dist0 = calibrate_camera_for_intrinsic_parameters(images_prefix)
+    save_camera_intrinsics(cmtx0, dist0, primary_camera_name)
     #camera1 intrinsics
-    images_prefix = os.path.join('frames', 'camera1*')
+    images_prefix = os.path.join('frames', f'{secondary_camera_name}*')
     cmtx1, dist1 = calibrate_camera_for_intrinsic_parameters(images_prefix)
-    save_camera_intrinsics(cmtx1, dist1, 'camera1') #this will write cmtx and dist to disk
+    save_camera_intrinsics(cmtx1, dist1, secondary_camera_name)
 
 
     """Step3. Save calibration frames for both cameras simultaneously"""
-    save_frames_two_cams('camera0', 'camera1') #save simultaneous frames
+    save_frames_two_cams(primary_camera_name, secondary_camera_name)
 
 
-    """Step4. Use paired calibration pattern frames to obtain camera0 to camera1 rotation and translation"""
-    frames_prefix_c0 = os.path.join('frames_pair', 'camera0*')
-    frames_prefix_c1 = os.path.join('frames_pair', 'camera1*')
+    """Step4. Use paired calibration pattern frames to obtain rotation and translation between the first two cameras"""
+    frames_prefix_c0 = os.path.join('frames_pair', f'{primary_camera_name}*')
+    frames_prefix_c1 = os.path.join('frames_pair', f'{secondary_camera_name}*')
     R, T = stereo_calibrate(cmtx0, dist0, cmtx1, dist1, frames_prefix_c0, frames_prefix_c1)
 
 
-    """Step5. Save calibration data where camera0 defines the world space origin."""
+    """Step5. Save calibration data where the primary camera defines the world space origin."""
     #camera0 rotation and translation is identity matrix and zeros vector
     R0 = np.eye(3, dtype=np.float32)
     T0 = np.array([0., 0., 0.]).reshape((3, 1))
 
-    save_extrinsic_calibration_parameters(R0, T0, R, T) #this will write R and T to disk
+    save_extrinsic_calibration_parameters(primary_camera_name, R0, T0, secondary_camera_name, R, T)
     R1 = R; T1 = T #to avoid confusion, camera1 R and T are labeled R1 and T1
     #check your calibration makes sense
     camera0_data = [cmtx0, dist0, R0, T0]
     camera1_data = [cmtx1, dist1, R1, T1]
-    check_calibration('camera0', camera0_data, 'camera1', camera1_data, _zshift = 60.)
+    check_calibration(primary_camera_name, camera0_data, secondary_camera_name, camera1_data, _zshift = 60.)
 
 
     """Optional. Define a different origin point and save the calibration data"""
     # #get the world to camera0 rotation and translation
-    # R_W0, T_W0 = get_world_space_origin(cmtx0, dist0, os.path.join('frames_pair', 'camera0_4.png'))
+    # R_W0, T_W0 = get_world_space_origin(cmtx0, dist0, os.path.join('frames_pair', f'{primary_camera_name}_4.png'))
     # #get rotation and translation from world directly to camera1
     # R_W1, T_W1 = get_cam1_to_world_transforms(cmtx0, dist0, R_W0, T_W0,
     #                                           cmtx1, dist1, R1, T1,
-    #                                           os.path.join('frames_pair', 'camera0_4.png'),
-    #                                           os.path.join('frames_pair', 'camera1_4.png'),)
+    #                                           os.path.join('frames_pair', f'{primary_camera_name}_4.png'),
+    #                                           os.path.join('frames_pair', f'{secondary_camera_name}_4.png'),)
 
     # #save rotation and translation parameters to disk
-    # save_extrinsic_calibration_parameters(R_W0, T_W0, R_W1, T_W1, prefix = 'world_to_') #this will write R and T to disk
+    # save_extrinsic_calibration_parameters(primary_camera_name, R_W0, T_W0, secondary_camera_name, R_W1, T_W1, prefix = 'world_to_')
 
