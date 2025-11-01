@@ -27,11 +27,23 @@ pip3 install -r requirements.txt
 
 **Calibration settings**
 
-The camera calibration settings first need to be configured in the ```calibration_settings.yaml``` file. 
+The camera calibration settings first need to be configured in the ```calibration_settings.yaml``` file.
 
-```camera0```: Put primary camera device_id here. You can check available video devices on linux with ```ls /dev/video*```. You only need to put the device number.
+Define your capture devices in the ```cameras``` list:
 
-```camera1```: Put secondary camera device_id here. 
+```
+cameras:
+  - name: camera0
+    device_id: 4
+  - name: camera1
+    device_id: 6
+```
+
+```name```: A friendly label that is used throughout the calibration workflow, including file names.
+
+```device_id```: Put the camera device identifier here. You can check available video devices on linux with ```ls /dev/video*```. You only need to put the device number.
+
+The first two entries in the list are used as the stereo pair when running the default workflow.
 
 ```frame_width``` and ```frame_height```: Camera calibration is tied with the image resolution. Once this is set, your calibration result can only be used with this resolution. Also, both cameras have to have the exact same ```width``` and ```height```. If your cameras do not support the same resolution, use cv.resize() in opencv to make them same ```width``` and ```height```. This package does not check if your camera resolutions are the same or supported by your camera, and does not raise exception. It is up to you to make sure your cameras can support this resolution.
 
@@ -79,7 +91,7 @@ If your code does not detect the checkerboard pattern points, ensure that your c
 
 A good calibration should result in less then 0.3 RMSE. You should aim to obtain about .15 to 0.25 RMSE.
 
-Once the code completes, a folder named ```camera_parameters``` is created and you should see ```camera0_intrinsics.dat``` and ```camera1_intrinsics.dat``` files. These contain the intrinsic parameters of the cameras. These only need to be calibrated once for each camera. If you change position of the cameras, this does not need to be recalibrated.
+Once the code completes, a folder named ```camera_parameters``` is created and you should see ```<camera_name>_intrinsics.dat``` files (for the default configuration these are ```camera0_intrinsics.dat``` and ```camera1_intrinsics.dat```). These contain the intrinsic parameters of the cameras. These only need to be calibrated once for each camera. If you change position of the cameras, this does not need to be recalibrated.
 
 **Step3. Save Calibration Frames for Both Cameras**
 
@@ -107,7 +119,7 @@ R and T alone are not enough to triangulate a 3D point. We need to define a worl
 
 Thus, the world origin to camera0 rotation is identity matrix and translation is a zeros vector. Then R, T obtained from previous step becomes rotation and translation from world origin to camera1. Practically what this means is that your 3D triangulated points will be with respect to the coordinate systemn sitting behind your camera0 lens, as shown above. 
 
-Step5 code will do all of this and save ```camera0_rot_trans.dat``` and ```camera1_rot_trans.dat``` in ```camera_parameters``` folder. This completes stereo calibration. You get intrinsic and extrinsic parameters for both cameras. If you want to see how to use these to obtain 3D triangulation, please check my other repositories (i.e [bodypose3d](https://github.com/TemugeB/bodypose3d)).
+Step5 code will do all of this and save ```<camera_name>_rot_trans.dat``` files in ```camera_parameters``` (for the default configuration these are ```camera0_rot_trans.dat``` and ```camera1_rot_trans.dat```). This completes stereo calibration. You get intrinsic and extrinsic parameters for both cameras. If you want to see how to use these to obtain 3D triangulation, please check my other repositories (i.e [bodypose3d](https://github.com/TemugeB/bodypose3d)).
 
 As final step, Step5 shows coordinate axes shifted 60cm forward in both camera views. Since I know that the axes are shifted 60cm forward, I can check it using a tape set to 60cm. You can see that both cameras are in good alignment. This is however not a good way to check your calibration. You should try to aim for RMSE < 0.5.
 
@@ -124,7 +136,7 @@ If you must define a different world space origin from camera0, you can uncommen
 You can also replace ```R_W0``` and ```T_W0``` to any rotation and translation for camera0, calculated some other way. This step is easier than you think. 
 
 Finally, two additional extrinsic files will be created, with respect to a world origin:
-```world_to_camera0_rot_trans.dat``` and ```world_to_camera1_rot_trans.dat```. These paired with the intrinsic parameters can also be used for triangulation. In this case, the 3D triangulated points will be with respect to the coordinate space defined by the calibration pattern. 
+```world_to_<camera_name>_rot_trans.dat``` (e.g., ```world_to_camera0_rot_trans.dat``` and ```world_to_camera1_rot_trans.dat```). These paired with the intrinsic parameters can also be used for triangulation. In this case, the 3D triangulated points will be with respect to the coordinate space defined by the calibration pattern.
 
 **Bonus**
 
