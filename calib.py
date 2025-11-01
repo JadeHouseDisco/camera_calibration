@@ -347,10 +347,6 @@ def save_camera_intrinsics(camera_matrix, distortion_coefs, camera_name):
 
 
 #open both cameras and take calibration frames
-def save_frames_two_cams(camera0_name, camera1_name):
-    save_frames_pair(camera0_name, camera1_name)
-
-
 #open paired calibration frames and stereo calibrate for cam0 to cam1 coorindate transformations
 def stereo_calibrate(mtx0, dist0, mtx1, dist1, frames_prefix_c0, frames_prefix_c1):
     #read the synched frames
@@ -664,6 +660,76 @@ def save_extrinsic_calibration_parameters(camera_extrinsics, prefix = ''):
 
     return camera_extrinsics
 
+
+def collect_mono_frames(camera_names):
+
+    total_cameras = len(camera_names)
+    print(f'Collecting calibration frames for {total_cameras} camera(s)...')
+    for index, camera_name in enumerate(camera_names, start = 1):
+        print(f'  [{index}/{total_cameras}] Capturing frames for "{camera_name}"')
+        save_frames_single_camera(camera_name)
+
+
+def collect_stereo_frames(reference_camera_name, target_camera_names):
+
+    if not target_camera_names:
+        return
+
+    total_pairs = len(target_camera_names)
+    print(f'Collecting paired calibration frames using reference camera "{reference_camera_name}"...')
+    for index, target_camera_name in enumerate(target_camera_names, start = 1):
+        print(f'  [{index}/{total_pairs}] Capturing paired frames for "{reference_camera_name}" vs "{target_camera_name}"')
+        save_frames_pair(reference_camera_name, target_camera_name)
+
+
+def calibrate_intrinsics(camera_names):
+
+    total_cameras = len(camera_names)
+    print(f'Calibrating intrinsics for {total_cameras} camera(s)...')
+    camera_intrinsics = {}
+    for index, camera_name in enumerate(camera_names, start = 1):
+        print(f'  [{index}/{total_cameras}] Processing intrinsics for "{camera_name}"')
+        images_prefix = os.path.join('frames', f'{camera_name}_*')
+        cmtx, dist = calibrate_camera_for_intrinsic_parameters(images_prefix)
+        save_camera_intrinsics(cmtx, dist, camera_name)
+        camera_intrinsics[camera_name] = (cmtx, dist)
+
+    return camera_intrinsics
+
+
+def calibrate_extrinsics(reference_camera_name, target_camera_names, camera_intrinsics):
+
+    if reference_camera_name not in camera_intrinsics:
+        raise KeyError(f'Reference camera "{reference_camera_name}" is missing intrinsic calibration data')
+
+    extrinsics = {}
+    extrinsics[reference_camera_name] = (
+        np.eye(3, dtype = np.float32),
+        np.zeros((3, 1), dtype = np.float32),
+    )
+
+    if not target_camera_names:
+        print('No additional cameras configured; skipping stereo calibration step.')
+        return extrinsics
+
+    total_pairs = len(target_camera_names)
+    print(f'Calibrating extrinsics relative to "{reference_camera_name}" for {total_pairs} camera pair(s)...')
+    cmtx_ref, dist_ref = camera_intrinsics[reference_camera_name]
+
+    for index, target_camera_name in enumerate(target_camera_names, start = 1):
+        if target_camera_name not in camera_intrinsics:
+            raise KeyError(f'Target camera "{target_camera_name}" is missing intrinsic calibration data')
+
+        print(f'  [{index}/{total_pairs}] Calibrating "{reference_camera_name}" vs "{target_camera_name}"')
+        cmtx_target, dist_target = camera_intrinsics[target_camera_name]
+        pair_dir = os.path.join('frames_pair', f'{reference_camera_name}_vs_{target_camera_name}')
+        frames_prefix_c0 = os.path.join(pair_dir, f'{reference_camera_name}_*')
+        frames_prefix_c1 = os.path.join(pair_dir, f'{target_camera_name}_*')
+        R, T = stereo_calibrate(cmtx_ref, dist_ref, cmtx_target, dist_target, frames_prefix_c0, frames_prefix_c1)
+        extrinsics[target_camera_name] = (R, T)
+
+    return extrinsics
+
 if __name__ == '__main__':
 
     if len(sys.argv) != 2:
@@ -674,45 +740,24 @@ if __name__ == '__main__':
     parse_calibration_settings_file(sys.argv[1])
 
     camera_names = get_configured_camera_names()
-    primary_camera_name, secondary_camera_name = camera_names[0], camera_names[1]
+    primary_camera_name = camera_names[0]
+    additional_camera_names = camera_names[1:]
 
 
     """Step1. Save calibration frames for single cameras"""
-    for camera_name in camera_names:
-        save_frames_single_camera(camera_name)
+    collect_mono_frames(camera_names)
 
 
     """Step2. Obtain camera intrinsic matrices and save them"""
-    camera_intrinsics = {}
-    for camera_name in camera_names:
-        images_prefix = os.path.join('frames', f'{camera_name}_*')
-        cmtx, dist = calibrate_camera_for_intrinsic_parameters(images_prefix)
-        save_camera_intrinsics(cmtx, dist, camera_name)
-        camera_intrinsics[camera_name] = (cmtx, dist)
-
-    cmtx0, dist0 = camera_intrinsics[primary_camera_name]
+    camera_intrinsics = calibrate_intrinsics(camera_names)
 
 
     """Step3. Save calibration frames for both cameras simultaneously"""
-    for target_camera_name in camera_names[1:]:
-        save_frames_pair(primary_camera_name, target_camera_name)
+    collect_stereo_frames(primary_camera_name, additional_camera_names)
 
 
     """Step4. Use paired calibration pattern frames to obtain rotation and translation between the primary camera and each target camera"""
-    camera_extrinsics = {}
-
-    #camera0 rotation and translation is identity matrix and zeros vector
-    R0 = np.eye(3, dtype=np.float32)
-    T0 = np.array([0., 0., 0.]).reshape((3, 1))
-    camera_extrinsics[primary_camera_name] = (R0, T0)
-
-    for target_camera_name in camera_names[1:]:
-        cmtx_target, dist_target = camera_intrinsics[target_camera_name]
-        pair_dir = os.path.join('frames_pair', f'{primary_camera_name}_vs_{target_camera_name}')
-        frames_prefix_c0 = os.path.join(pair_dir, f'{primary_camera_name}_*')
-        frames_prefix_c1 = os.path.join(pair_dir, f'{target_camera_name}_*')
-        R, T = stereo_calibrate(cmtx0, dist0, cmtx_target, dist_target, frames_prefix_c0, frames_prefix_c1)
-        camera_extrinsics[target_camera_name] = (R, T)
+    camera_extrinsics = calibrate_extrinsics(primary_camera_name, additional_camera_names, camera_intrinsics)
 
 
     """Step5. Save calibration data where the primary camera defines the world space origin."""
