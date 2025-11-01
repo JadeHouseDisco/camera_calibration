@@ -588,46 +588,35 @@ def get_cam1_to_world_transforms(cmtx0, dist0, R_W0, T_W0,
     return R_W1, T_W1
 
 
-def save_extrinsic_calibration_parameters(camera0_name, R0, T0, camera1_name, R1, T1, prefix = ''):
+def _write_matrix(outf, label, matrix):
+    outf.write(f'{label}:\n')
+    arr = np.asarray(matrix)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    for row in arr:
+        outf.write(' '.join(str(value) for value in row) + '\n')
+
+
+def save_extrinsic_calibration_parameters(camera_extrinsics, prefix = ''):
+
+    if not isinstance(camera_extrinsics, dict):
+        raise TypeError('camera_extrinsics must be a mapping of camera name to (R, T) tuples')
 
     #create folder if it does not exist
     if not os.path.exists('camera_parameters'):
         os.mkdir('camera_parameters')
 
-    camera0_rot_trans_filename = os.path.join('camera_parameters', f"{prefix}{camera0_name}_rot_trans.dat")
-    outf = open(camera0_rot_trans_filename, 'w')
+    for camera_name, extrinsics in camera_extrinsics.items():
+        if not isinstance(extrinsics, (list, tuple)) or len(extrinsics) != 2:
+            raise ValueError(f'Extrinsics for camera "{camera_name}" must be a (R, T) tuple')
 
-    outf.write('R:\n')
-    for l in R0:
-        for en in l:
-            outf.write(str(en) + ' ')
-        outf.write('\n')
+        R, T = extrinsics
+        camera_rot_trans_filename = os.path.join('camera_parameters', f"{prefix}{camera_name}_rot_trans.dat")
+        with open(camera_rot_trans_filename, 'w') as outf:
+            _write_matrix(outf, 'R', R)
+            _write_matrix(outf, 'T', T)
 
-    outf.write('T:\n')
-    for l in T0:
-        for en in l:
-            outf.write(str(en) + ' ')
-        outf.write('\n')
-    outf.close()
-
-    #R1 and T1 are just stereo calibration returned values
-    camera1_rot_trans_filename = os.path.join('camera_parameters', f"{prefix}{camera1_name}_rot_trans.dat")
-    outf = open(camera1_rot_trans_filename, 'w')
-
-    outf.write('R:\n')
-    for l in R1:
-        for en in l:
-            outf.write(str(en) + ' ')
-        outf.write('\n')
-
-    outf.write('T:\n')
-    for l in T1:
-        for en in l:
-            outf.write(str(en) + ' ')
-        outf.write('\n')
-    outf.close()
-
-    return R0, T0, R1, T1
+    return camera_extrinsics
 
 if __name__ == '__main__':
 
@@ -656,7 +645,6 @@ if __name__ == '__main__':
         camera_intrinsics[camera_name] = (cmtx, dist)
 
     cmtx0, dist0 = camera_intrinsics[primary_camera_name]
-    cmtx1, dist1 = camera_intrinsics[secondary_camera_name]
 
 
     """Step3. Save calibration frames for both cameras simultaneously"""
@@ -664,24 +652,34 @@ if __name__ == '__main__':
         save_frames_pair(primary_camera_name, target_camera_name)
 
 
-    """Step4. Use paired calibration pattern frames to obtain rotation and translation between the first two cameras"""
-    primary_pair_dir = os.path.join('frames_pair', f'{primary_camera_name}_vs_{secondary_camera_name}')
-    frames_prefix_c0 = os.path.join(primary_pair_dir, f'{primary_camera_name}_*')
-    frames_prefix_c1 = os.path.join(primary_pair_dir, f'{secondary_camera_name}_*')
-    R, T = stereo_calibrate(cmtx0, dist0, cmtx1, dist1, frames_prefix_c0, frames_prefix_c1)
+    """Step4. Use paired calibration pattern frames to obtain rotation and translation between the primary camera and each target camera"""
+    camera_extrinsics = {}
 
-
-    """Step5. Save calibration data where the primary camera defines the world space origin."""
     #camera0 rotation and translation is identity matrix and zeros vector
     R0 = np.eye(3, dtype=np.float32)
     T0 = np.array([0., 0., 0.]).reshape((3, 1))
+    camera_extrinsics[primary_camera_name] = (R0, T0)
 
-    save_extrinsic_calibration_parameters(primary_camera_name, R0, T0, secondary_camera_name, R, T)
-    R1 = R; T1 = T #to avoid confusion, camera1 R and T are labeled R1 and T1
-    #check your calibration makes sense
-    camera0_data = [cmtx0, dist0, R0, T0]
-    camera1_data = [cmtx1, dist1, R1, T1]
-    check_calibration(primary_camera_name, camera0_data, secondary_camera_name, camera1_data, _zshift = 60.)
+    for target_camera_name in camera_names[1:]:
+        cmtx_target, dist_target = camera_intrinsics[target_camera_name]
+        pair_dir = os.path.join('frames_pair', f'{primary_camera_name}_vs_{target_camera_name}')
+        frames_prefix_c0 = os.path.join(pair_dir, f'{primary_camera_name}_*')
+        frames_prefix_c1 = os.path.join(pair_dir, f'{target_camera_name}_*')
+        R, T = stereo_calibrate(cmtx0, dist0, cmtx_target, dist_target, frames_prefix_c0, frames_prefix_c1)
+        camera_extrinsics[target_camera_name] = (R, T)
+
+
+    """Step5. Save calibration data where the primary camera defines the world space origin."""
+    save_extrinsic_calibration_parameters(camera_extrinsics)
+
+    if len(camera_names) > 1:
+        secondary_camera_name = camera_names[1]
+        R1, T1 = camera_extrinsics[secondary_camera_name]
+        cmtx1, dist1 = camera_intrinsics[secondary_camera_name]
+        #check your calibration makes sense
+        camera0_data = [cmtx0, dist0, R0, T0]
+        camera1_data = [cmtx1, dist1, R1, T1]
+        check_calibration(primary_camera_name, camera0_data, secondary_camera_name, camera1_data, _zshift = 60.)
 
 
     """Optional. Define a different origin point and save the calibration data"""
