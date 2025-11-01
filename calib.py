@@ -1,5 +1,6 @@
 import cv2 as cv
 import glob
+import itertools
 import numpy as np
 import sys
 from scipy import linalg
@@ -437,19 +438,12 @@ def get_projection_matrix(cmtx, R, T):
     return P
 
 # After calibrating, we can see shifted coordinate axes in the video feeds directly
-def check_calibration(camera0_name, camera0_data, camera1_name, camera1_data, _zshift = 50.):
-    
-    cmtx0 = np.array(camera0_data[0])
-    dist0 = np.array(camera0_data[1])
-    R0 = np.array(camera0_data[2])
-    T0 = np.array(camera0_data[3])
-    cmtx1 = np.array(camera1_data[0])
-    dist1 = np.array(camera1_data[1])
-    R1 = np.array(camera1_data[2])
-    T1 = np.array(camera1_data[3])
+def check_calibration(camera_calibrations, _zshift = 50., overlay_pairs = None):
 
-    P0 = get_projection_matrix(cmtx0, R0, T0)
-    P1 = get_projection_matrix(cmtx1, R1, T1)
+    if not isinstance(camera_calibrations, dict) or not camera_calibrations:
+        raise ValueError('camera_calibrations must be a non-empty mapping of name to (cmtx, dist, R, T) tuples')
+
+    overlay_pairs = overlay_pairs or []
 
     #define coordinate axes in 3D space. These are just the usual coorindate vectors
     coordinate_points = np.array([[0.,0.,0.],
@@ -457,72 +451,124 @@ def check_calibration(camera0_name, camera0_data, camera1_name, camera1_data, _z
                                   [0.,1.,0.],
                                   [0.,0.,1.]])
     z_shift = np.array([0.,0.,_zshift]).reshape((1, 3))
-    #increase the size of the coorindate axes and shift in the z direction
+    #increase the size of the coordinate axes and shift in the z direction
     draw_axes_points = 5 * coordinate_points + z_shift
 
-    #project 3D points to each camera view manually. This can also be done using cv.projectPoints()
-    #Note that this uses homogenous coordinate formulation
-    pixel_points_camera0 = []
-    pixel_points_camera1 = []
-    for _p in draw_axes_points:
-        X = np.array([_p[0], _p[1], _p[2], 1.])
-        
-        #project to camera0
-        uv = P0 @ X
-        uv = np.array([uv[0], uv[1]])/uv[2]
-        pixel_points_camera0.append(uv)
+    colors = [(0,0,255), (0,255,0), (255,0,0)]  # RGB colors to indicate XYZ axes respectively
 
-        #project to camera1
-        uv = P1 @ X
-        uv = np.array([uv[0], uv[1]])/uv[2]
-        pixel_points_camera1.append(uv)
+    prepared_cameras = {}
+    open_windows = set()
 
-    #these contain the pixel coorindates in each camera view as: (pxl_x, pxl_y)
-    pixel_points_camera0 = np.array(pixel_points_camera0)
-    pixel_points_camera1 = np.array(pixel_points_camera1)
+    def _normalize_translation_vector(tvec):
+        tvec = np.asarray(tvec, dtype = np.float64)
+        if tvec.size != 3:
+            raise ValueError('Translation vectors must contain exactly three elements')
+        return tvec.reshape(3, 1)
 
-    #open the video streams
-    cap0 = cv.VideoCapture(get_camera_device_id(camera0_name))
-    cap1 = cv.VideoCapture(get_camera_device_id(camera1_name))
+    def _prepare_overlay_frame(frame_a, frame_b):
+        if frame_a.shape[:2] != frame_b.shape[:2]:
+            target_height = min(frame_a.shape[0], frame_b.shape[0])
+            target_width = min(frame_a.shape[1], frame_b.shape[1])
+            frame_a = cv.resize(frame_a, (target_width, target_height))
+            frame_b = cv.resize(frame_b, (target_width, target_height))
+        return cv.addWeighted(frame_a, 0.5, frame_b, 0.5, 0)
 
-    #set camera resolutions
-    width = calibration_settings['frame_width']
-    height = calibration_settings['frame_height']
-    cap0.set(3, width)
-    cap0.set(4, height)
-    cap1.set(3, width)
-    cap1.set(4, height)
+    # Prepare per-camera data
+    for camera_name, data in camera_calibrations.items():
+        if not isinstance(data, (tuple, list)) or len(data) != 4:
+            raise ValueError(f'Calibration data for camera "{camera_name}" must be a 4-tuple of (cmtx, dist, R, T)')
 
-    while True:
+        cmtx = np.asarray(data[0], dtype = np.float64)
+        dist = np.asarray(data[1], dtype = np.float64)
+        R = np.asarray(data[2], dtype = np.float64)
+        T = _normalize_translation_vector(data[3])
 
-        ret0, frame0 = cap0.read()
-        ret1, frame1 = cap1.read()
+        P = get_projection_matrix(cmtx, R, T)
+        pixel_points = []
+        for _p in draw_axes_points:
+            X = np.array([_p[0], _p[1], _p[2], 1.])
+            uv = P @ X
+            uv = np.array([uv[0], uv[1]])/uv[2]
+            pixel_points.append(uv)
+        pixel_points = np.array(pixel_points)
 
-        if not ret0 or not ret1:
-            print('Video stream not returning frame data')
-            quit()
+        cap = _create_video_capture(camera_name)
+        if not cap.isOpened():
+            raise RuntimeError(f'Could not open video stream for camera "{camera_name}"')
 
-        #follow RGB colors to indicate XYZ axes respectively
-        colors = [(0,0,255), (0,255,0), (255,0,0)]
-        #draw projections to camera0
-        origin = tuple(pixel_points_camera0[0].astype(np.int32))
-        for col, _p in zip(colors, pixel_points_camera0[1:]):
-            _p = tuple(_p.astype(np.int32))
-            cv.line(frame0, origin, _p, col, 2)
-        
-        #draw projections to camera1
-        origin = tuple(pixel_points_camera1[0].astype(np.int32))
-        for col, _p in zip(colors, pixel_points_camera1[1:]):
-            _p = tuple(_p.astype(np.int32))
-            cv.line(frame1, origin, _p, col, 2)
+        prepared_cameras[camera_name] = {
+            'capture': cap,
+            'pixel_points': pixel_points,
+        }
 
-        cv.imshow('frame0', frame0)
-        cv.imshow('frame1', frame1)
+    # Filter overlay pairs to those that exist, otherwise fall back to all combinations
+    camera_names = list(prepared_cameras.keys())
+    valid_overlay_pairs = []
+    for pair in overlay_pairs:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            continue
+        a, b = pair
+        if a in prepared_cameras and b in prepared_cameras and a != b:
+            valid_overlay_pairs.append((a, b))
+    if not valid_overlay_pairs and len(camera_names) > 1:
+        valid_overlay_pairs = list(itertools.combinations(camera_names, 2))
 
-        k = cv.waitKey(1)
-        if k == 27: break
+    display_modes = ['all']
+    if valid_overlay_pairs:
+        display_modes.append('overlay')
+    display_mode_index = 0
+    active_overlay_index = 0
 
-    cv.destroyAllWindows()
+    try:
+        while True:
+            frames_with_axes = {}
+            desired_windows = set()
+
+            for camera_name, info in prepared_cameras.items():
+                cap = info['capture']
+                ret, frame = cap.read()
+                if not ret:
+                    raise RuntimeError(f'Video stream not returning frame data for camera "{camera_name}"')
+
+                frame_with_axes = frame.copy()
+                origin = tuple(info['pixel_points'][0].astype(np.int32))
+                for col, _p in zip(colors, info['pixel_points'][1:]):
+                    point = tuple(_p.astype(np.int32))
+                    cv.line(frame_with_axes, origin, point, col, 2)
+
+                frames_with_axes[camera_name] = frame_with_axes
+
+            display_mode = display_modes[display_mode_index]
+
+            if display_mode == 'overlay' and valid_overlay_pairs:
+                cam_a, cam_b = valid_overlay_pairs[active_overlay_index]
+                overlay_window = f'{cam_a}_vs_{cam_b}_overlay'
+                overlay_frame = _prepare_overlay_frame(frames_with_axes[cam_a], frames_with_axes[cam_b])
+                cv.imshow(overlay_window, overlay_frame)
+                desired_windows.add(overlay_window)
+            else:
+                for camera_name, frame_with_axes in frames_with_axes.items():
+                    window_name = f'{camera_name}_view'
+                    cv.imshow(window_name, frame_with_axes)
+                    desired_windows.add(window_name)
+
+            for window in open_windows - desired_windows:
+                cv.destroyWindow(window)
+            open_windows = desired_windows
+
+            k = cv.waitKey(1) & 0xFF
+            if k == 27:
+                break
+            if k == ord('m') and len(display_modes) > 1:
+                display_mode_index = (display_mode_index + 1) % len(display_modes)
+            if k == ord('n') and display_modes[display_mode_index] == 'overlay' and valid_overlay_pairs:
+                active_overlay_index = (active_overlay_index + 1) % len(valid_overlay_pairs)
+            if k == ord('p') and display_modes[display_mode_index] == 'overlay' and valid_overlay_pairs:
+                active_overlay_index = (active_overlay_index - 1) % len(valid_overlay_pairs)
+    finally:
+        for info in prepared_cameras.values():
+            info['capture'].release()
+        cv.destroyAllWindows()
 
 def get_world_space_origin(cmtx, dist, img_path):
 
@@ -673,13 +719,14 @@ if __name__ == '__main__':
     save_extrinsic_calibration_parameters(camera_extrinsics)
 
     if len(camera_names) > 1:
-        secondary_camera_name = camera_names[1]
-        R1, T1 = camera_extrinsics[secondary_camera_name]
-        cmtx1, dist1 = camera_intrinsics[secondary_camera_name]
+        calibration_data = {}
+        for camera_name in camera_names:
+            cmtx, dist = camera_intrinsics[camera_name]
+            R, T = camera_extrinsics[camera_name]
+            calibration_data[camera_name] = (cmtx, dist, R, T)
+
         #check your calibration makes sense
-        camera0_data = [cmtx0, dist0, R0, T0]
-        camera1_data = [cmtx1, dist1, R1, T1]
-        check_calibration(primary_camera_name, camera0_data, secondary_camera_name, camera1_data, _zshift = 60.)
+        check_calibration(calibration_data, _zshift = 60.)
 
 
     """Optional. Define a different origin point and save the calibration data"""
